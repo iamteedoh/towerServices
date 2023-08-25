@@ -1,0 +1,20 @@
+all:
+  hosts:
+    server1.domain.tld
+    server2.domain.tld
+    server3.domain.tld
+    server4.domain.tld
+    server5.domain.tld
+
+  children:
+    tower_servers:
+      hosts:
+        server1.domain.tld
+        server2.domain.tld
+      vars:
+        ansible_ssh_user: "{{ userHere }}"
+        ansible_ssh_private_key_file: /path/to/private/key
+
+    other_group:
+      hosts:
+        other_server.domain.tld:

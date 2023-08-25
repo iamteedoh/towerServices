@@ -1,0 +1,28 @@
+---
+- name: Manage Ansible Tower Services
+  hosts: tower_servers
+  become: yes
+  vars_prompt:
+    - name: service_state
+      prompt: "Do you want to enable or disable the Tower services? (enable/disable)"
+      private: no
+      validate: "^(enable|disable)$"
+      failure_msg: "Please provide a valid input: enable or disable."
+
+  tasks:
+
+    - name: "Ensure Tower services are {{ service_state }}d"
+      systemd:
+        name: "{{ item }}"
+        state: "{% if service_state == 'enable' %}started{% else %}stopped{% endif %}"
+        enabled: "{{ service_state == 'enable' }}"
+      loop:
+        #- awx-celery-worker
+        #- awx-channels-worker
+        #- awx-daphne
+        #- awx-nginx
+        #- awx-receiver
+        #- awx-uwsgi
+        #- awx-web
+        #- awx-rabbitmq
+        - ansible-tower

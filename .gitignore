@@ -1,0 +1,6 @@
+*.swp
+*.lock
+*.lck
+.vault_passwd
+.ansibleVault
+.DS_Store
