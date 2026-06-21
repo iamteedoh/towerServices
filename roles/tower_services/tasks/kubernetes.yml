@@ -56,7 +56,9 @@
             'name': item.name,
             'type': item.type,
             'started': item.started | default(''),
-            'ui_url': ((awx_public_url ~ '/#/jobs/' ~ (awx_job_ui_segment[item.type] | default('playbook')) ~ '/' ~ item.id ~ '/output') if awx_public_url else '')
+            'ui_url': ((awx_public_url ~ '/#/jobs/'
+              ~ (awx_job_ui_segment[item.type] | default('playbook'))
+              ~ '/' ~ item.id ~ '/output') if awx_public_url else '')
           }] }}
       loop: "{{ _running_jobs.json.results | default([]) }}"
       loop_control:
@@ -157,7 +159,7 @@
         ca_path: "{{ awx_api_ca_path }}"
       register: _awx_instances
 
-    - name: "Set instance enabled={{ service_action == 'resume' }} (drain/undrain)"
+    - name: Drain or undrain AWX instances (pause/resume)
       ansible.builtin.uri:
         url: "{{ awx_api_url }}/api/v2/instances/{{ item.id }}/"
         method: PATCH
