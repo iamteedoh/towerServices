@@ -9,7 +9,7 @@
          if service_action in ['stop', 'disable']
          else tower_services }}
 
-- name: "Apply '{{ service_action }}' to managed units"
+- name: Apply the requested state to managed units
   ansible.builtin.systemd_service:
     name: "{{ item }}"
     state: "{{ systemd_state_map[service_action] | default(omit) }}"
