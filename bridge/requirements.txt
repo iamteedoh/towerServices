@@ -1,0 +1,4 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+ansible-core>=2.16,<2.18
+kubernetes>=29.0.0

@@ -1,0 +1,31 @@
+---
+# ===========================================================================
+# towerServices — one entry point for all maintenance actions.
+#
+# Drive it entirely with extra-vars (button / survey / CLI friendly):
+#   ansible-playbook -i inventories/production site.yml \
+#       -l aap_controller \
+#       -e service_action=restart -e confirm=true
+#
+# service_action : status | enable | disable | start | stop | restart
+# confirm        : true (required for disable/stop)
+# Use -l / --limit to scope to a host group (aap_controller, aap_hub,
+# aap_eda, legacy_tower, awx) or a single host.
+# ===========================================================================
+
+# --- systemd-managed platforms (AAP controller / hub / EDA, legacy Tower) ---
+- name: Manage AAP & Tower services (systemd)
+  hosts: aap_controller:aap_hub:aap_eda:legacy_tower
+  become: true
+  gather_facts: false
+  serial: "{{ maintenance_serial | default('100%') }}"
+  roles:
+    - role: tower_services
+
+# --- AWX on Kubernetes (runs from the control node, no SSH/become) ---
+- name: Manage AWX services (kubernetes)
+  hosts: awx
+  become: false
+  gather_facts: false
+  roles:
+    - role: tower_services

@@ -1,0 +1,7 @@
+---
+# Connection defaults shared by every SSH-managed host. Override per group or
+# host as needed. Store any vault'd values in a vault file (see .gitignore).
+ansible_user: "{{ tower_ssh_user | default('ansible') }}"
+
+# Roll maintenance one host at a time across a cluster (override per run):
+# maintenance_serial: 1
