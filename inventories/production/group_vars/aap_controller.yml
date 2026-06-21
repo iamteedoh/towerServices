@@ -1,0 +1,14 @@
+---
+# AAP 2.x automation controller (RPM install, systemd).
+# `automation-controller` is the umbrella target that pulls in the sub-units;
+# they are listed explicitly so status reporting covers each one. Order is
+# start-order; stop/disable reverses it automatically.
+tower_platform: systemd
+tower_services:
+  - automation-controller        # umbrella target
+  - automation-controller-web
+  - automation-controller-task
+  - automation-controller-rsyslog
+  - receptor                     # automation mesh node
+  - nginx
+  - redis                        # some builds use redis-unix / redis-tcp instead

@@ -1,0 +1,11 @@
+---
+# AAP Event-Driven Ansible (systemd).
+tower_platform: systemd
+tower_services:
+  - automation-eda-api
+  - automation-eda-daphne
+  - automation-eda-worker@1
+  - automation-eda-activation-worker@1
+  - automation-eda-scheduler
+  - nginx
+  - redis

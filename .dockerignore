@@ -1,0 +1,10 @@
+.git
+.github
+__pycache__/
+*.pyc
+.venv/
+.env
+bridge/k8s/rendered/
+*.local.yml
+*.local.yaml
+.DS_Store

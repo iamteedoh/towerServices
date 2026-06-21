@@ -1,0 +1,17 @@
+---
+# AWX on Kubernetes (awx-operator). "Services" are Deployments in the AWX
+# namespace; enable/disable scales them up/down, restart does a rollout.
+# Confirm the deployment names with:
+#   kubectl -n awx get deploy
+tower_platform: kubernetes
+awx_namespace: awx
+# Modern AWX runs under the awx-operator, which actively manages replica counts;
+# disabling must patch the AWX custom resource, not the Deployments directly.
+# Set to "deployment" for raw-manifest / non-operator AWX installs.
+awx_managed_by: operator
+awx_cr_name: awx
+awx_desired_replicas: 1
+# Deployments used for STATUS reporting (the operator owns their replica count).
+tower_services:
+  - awx-web
+  - awx-task

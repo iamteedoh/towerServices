@@ -1,0 +1,101 @@
+---
+# Template — rendered by bridge/deploy.sh (envsubst, ${...} from .env). nginx
+# variables ($host, $http_upgrade, ...) are lowercase and never set in .env, so
+# envsubst leaves them untouched.
+#
+# Reverse-proxy that BECOMES the AWX URL: AWX itself is moved to a ClusterIP
+# (CR service_type: ClusterIP) so it isn't reachable directly; everything goes
+# through here. Up -> proxy to AWX (with websockets for live job output);
+# down -> the bridge's /maint/awx maintenance page (deliberate vs. outage).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: awx-proxy
+  namespace: ${K8S_NAMESPACE}
+data:
+  default.conf: |
+    map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+    upstream awx_backend { server ${AWX_UPSTREAM}; }
+    server {
+      listen 80;
+      server_name _;
+      client_max_body_size 0;            # large project/inventory uploads
+      proxy_intercept_errors on;
+      # Helper paths (served by the bridge): the injected banner script and the
+      # lightweight paused-state it polls. Same-origin, so no token in the page.
+      location = /_ts/banner.js { proxy_pass http://${BRIDGE_UPSTREAM}/banner.js; }
+      location = /_ts/state     { proxy_pass http://${BRIDGE_UPSTREAM}/state/awx; }
+
+      location / {
+        proxy_pass http://awx_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 3600s;         # long-lived websockets / job streams
+        proxy_send_timeout 3600s;
+        # Inject the paused-state banner into AWX's HTML. Accept-Encoding is
+        # cleared so the (otherwise gzipped) HTML is matchable by sub_filter.
+        proxy_set_header Accept-Encoding "";
+        sub_filter '</body>' '<script src="/_ts/banner.js"></script></body>';
+        sub_filter_once on;
+        error_page 502 503 504 = @maint;
+      }
+      location @maint {                   # AWX unreachable -> maintenance page
+        # named location: proxy_pass can't carry a URI, so rewrite then pass
+        rewrite ^ /maint/awx break;
+        proxy_pass http://${BRIDGE_UPSTREAM};
+        proxy_set_header Host $host;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: awx-proxy
+  namespace: ${K8S_NAMESPACE}
+  labels: { app: awx-proxy }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: awx-proxy }
+  template:
+    metadata:
+      labels: { app: awx-proxy }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - { name: conf, mountPath: /etc/nginx/conf.d }
+          readinessProbe:
+            # TCP, not HTTP: nginx is ready whenever it's listening, even when
+            # it's serving the 503 maintenance page (AWX down).
+            tcpSocket: { port: 80 }
+            initialDelaySeconds: 3
+      volumes:
+        - name: conf
+          configMap:
+            name: awx-proxy
+            items:
+              - { key: default.conf, path: default.conf }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: awx-proxy
+  namespace: ${K8S_NAMESPACE}
+  labels: { app: awx-proxy }
+spec:
+  type: NodePort
+  selector: { app: awx-proxy }
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: ${AWX_PROXY_NODEPORT}   # AWX's old port — now the proxy owns it

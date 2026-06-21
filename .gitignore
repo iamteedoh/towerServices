@@ -4,3 +4,17 @@
 .vault_passwd
 .ansibleVault
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local environment config & rendered manifests (never commit real values)
+.env
+*.local.yml
+*.local.yaml
+bridge/k8s/rendered/
+# Real inventories with actual hostnames (ship only the sample under inventories/)
+inventories/local/
+

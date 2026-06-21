@@ -1,0 +1,10 @@
+---
+profile: production
+exclude_paths:
+  - bridge/
+  - .github/
+  - homepage/
+skip_list:
+  - var-naming[no-role-prefix]   # shared vars (tower_services, service_action) are intentional
+warn_list:
+  - experimental
