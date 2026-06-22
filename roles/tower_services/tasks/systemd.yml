@@ -1,0 +1,44 @@
+---
+# systemd path: applies to AAP controller/hub/EDA and legacy Ansible Tower.
+
+# Stop/disable in reverse dependency order; start/enable in forward order.
+- name: Determine ordered service list
+  ansible.builtin.set_fact:
+    _ordered_services: >-
+      {{ (tower_services | reverse | list)
+         if service_action in ['stop', 'disable']
+         else tower_services }}
+
+- name: Apply the requested state to managed units
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: "{{ systemd_state_map[service_action] | default(omit) }}"
+    enabled: "{{ systemd_enabled_map[service_action] | default(omit) }}"
+  loop: "{{ _ordered_services }}"
+  when: service_action != 'status'
+  register: _systemd_apply
+  failed_when:
+    - _systemd_apply is failed
+    # Tolerate "not found" only when stopping/disabling something already gone.
+    - not (service_action in ['stop', 'disable'] and 'could not be found' in (_systemd_apply.msg | default('')))
+
+- name: Read final state of managed units
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+  loop: "{{ tower_services }}"
+  register: _systemd_final
+  changed_when: false
+
+- name: Build per-service status report (systemd)
+  ansible.builtin.set_fact:
+    service_report: >-
+      {{ service_report | default([]) + [{
+        'name': item.item,
+        'active_state': item.status.ActiveState | default('unknown'),
+        'sub_state': item.status.SubState | default('unknown'),
+        'enabled': item.status.UnitFileState | default('unknown'),
+        'active': (item.status.ActiveState | default('') == 'active')
+      }] }}
+  loop: "{{ _systemd_final.results }}"
+  loop_control:
+    label: "{{ item.item }}"

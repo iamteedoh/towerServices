@@ -1,0 +1,65 @@
+---
+# Compute an overall health verdict and emit machine-readable status that the
+# bridge service (and therefore the Homepage button) consumes.
+#
+# overall_state: healthy | disabled | degraded | unknown
+# overall_color: green   | red      | amber    | grey     (Homepage tile color)
+
+- name: Compute overall health
+  ansible.builtin.set_fact:
+    # paused (web up, jobs drained) outranks healthy: pods are up so _active
+    # would read healthy, but job execution is intentionally stopped.
+    overall_state: >-
+      {{ 'unknown' if _total | int == 0
+         else 'disabled' if _active | int == 0
+         else 'paused' if (is_paused | default(false) | bool)
+         else 'healthy' if _active | int == _total | int
+         else 'degraded' }}
+    overall_color: >-
+      {{ 'grey' if _total | int == 0
+         else 'red' if _active | int == 0
+         else 'amber' if (is_paused | default(false) | bool)
+         else 'green' if _active | int == _total | int
+         else 'amber' }}
+  vars:
+    _active: "{{ service_report | default([]) | selectattr('active') | list | length }}"
+    _total: "{{ service_report | default([]) | length }}"
+
+- name: Assemble host status document
+  ansible.builtin.set_fact:
+    host_status:
+      host: "{{ inventory_hostname }}"
+      platform: "{{ tower_platform }}"
+      action: "{{ service_action }}"
+      state: "{{ overall_state }}"
+      color: "{{ overall_color }}"
+      services: "{{ service_report | default([]) }}"
+      # drain block info (set by a graceful disable that hit running jobs)
+      drain:
+        blocked: "{{ drain_blocked | default(false) | bool }}"
+        jobs: "{{ blocking_jobs | default([]) }}"
+      # ISO timestamp without needing gather_facts
+      checked_at: "{{ now(utc=true).isoformat() }}"
+
+- name: Show status summary
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} [{{ tower_platform }}] -> {{ overall_state | upper }}
+      ({{ overall_color }}) after action '{{ service_action }}'
+
+- name: Ensure status output directory exists on control node
+  ansible.builtin.file:
+    path: "{{ status_output_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  run_once: false
+  when: write_status_file | bool
+
+- name: Write per-host status JSON to control node
+  ansible.builtin.copy:
+    content: "{{ host_status | to_nice_json }}\n"
+    dest: "{{ status_output_dir }}/{{ inventory_hostname }}.json"
+    mode: "0644"
+  delegate_to: localhost
+  when: write_status_file | bool

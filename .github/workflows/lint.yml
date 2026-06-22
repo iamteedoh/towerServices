@@ -1,0 +1,37 @@
+---
+name: lint
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ansible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tooling
+        run: pip install ansible-core ansible-lint yamllint
+      - name: Install collections
+        run: ansible-galaxy collection install -r requirements.yml
+      - name: yamllint
+        run: yamllint .
+      - name: ansible-lint
+        run: ansible-lint
+      - name: Syntax check
+        run: ansible-playbook -i inventories/production site.yml --syntax-check
+
+  bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install bridge deps
+        run: pip install -r bridge/requirements.txt
+      - name: Import check
+        run: python -c "import bridge.app"

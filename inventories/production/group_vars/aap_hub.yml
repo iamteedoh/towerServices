@@ -1,0 +1,12 @@
+---
+# AAP Private Automation Hub (pulpcore, systemd). pulpcore-worker is a
+# templated unit; adjust the worker instances to match your install.
+tower_platform: systemd
+tower_services:
+  - pulpcore-api
+  - pulpcore-content
+  - pulpcore-worker@1
+  - pulpcore-worker@2
+  - pulpcore-resource-manager
+  - nginx
+  - redis

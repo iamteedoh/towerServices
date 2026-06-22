@@ -1,0 +1,40 @@
+---
+# Entry point: validate, dispatch to the right platform, then report.
+
+- name: Validate requested action
+  ansible.builtin.assert:
+    that:
+      - service_action in _valid_actions
+    fail_msg: >-
+      service_action must be one of {{ _valid_actions }} (got '{{ service_action }}').
+    success_msg: "Action '{{ service_action }}' accepted for {{ inventory_hostname }}."
+  vars:
+    _valid_actions: [status, enable, disable, start, stop, restart, pause, resume]
+
+- name: Require confirmation for destructive actions
+  ansible.builtin.assert:
+    that:
+      - confirm | bool
+    fail_msg: >-
+      Action '{{ service_action }}' will take services offline; re-run with
+      confirm=true to proceed.
+  when: service_action in ['disable', 'stop']
+
+- name: Ensure services are defined for this host
+  ansible.builtin.assert:
+    that:
+      - tower_services | length > 0
+    fail_msg: >-
+      No 'tower_services' defined for {{ inventory_hostname }}. Set it in the
+      matching group_vars file.
+
+- name: Manage services via systemd (AAP / Tower)
+  ansible.builtin.include_tasks: systemd.yml
+  when: tower_platform == 'systemd'
+
+- name: Manage services via Kubernetes (AWX)
+  ansible.builtin.include_tasks: kubernetes.yml
+  when: tower_platform == 'kubernetes'
+
+- name: Compute overall health and write status report
+  ansible.builtin.include_tasks: report.yml

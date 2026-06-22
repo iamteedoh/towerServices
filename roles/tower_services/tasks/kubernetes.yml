@@ -1,0 +1,315 @@
+---
+# kubernetes path: AWX. Management modes (awx_managed_by):
+#   operator   - patch the AWX custom resource's replicas; the awx-operator
+#                reconciles the Deployments (use when the CR manages replicas).
+#   deployment - scale the Deployments directly (raw-manifest / non-operator).
+# Status always reads the Deployments. pause/resume (and a graceful disable)
+# drain job execution via the AWX API.
+
+# --- graceful drain before a full stop (disable/stop) --------------------
+- name: Drain AWX jobs before stopping
+  when:
+    - service_action in ['disable', 'stop']
+    - awx_disable_drain | bool
+    - awx_api_token | length > 0
+  block:
+    - name: List AWX instances (pre-stop drain)
+      ansible.builtin.uri:
+        url: "{{ awx_api_url }}/api/v2/instances/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ awx_api_token }}"
+        validate_certs: "{{ awx_api_validate_certs }}"
+        ca_path: "{{ awx_api_ca_path }}"
+      register: _predisable_instances
+
+    - name: Stop new jobs (instance enabled=false)
+      ansible.builtin.uri:
+        url: "{{ awx_api_url }}/api/v2/instances/{{ item.id }}/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ awx_api_token }}"
+        body_format: json
+        body: { enabled: false }
+        status_code: [200]
+        validate_certs: "{{ awx_api_validate_certs }}"
+        ca_path: "{{ awx_api_ca_path }}"
+      loop: "{{ _predisable_instances.json.results | selectattr('node_type', 'in', awx_pause_node_types) | list }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+
+    - name: Check for running jobs that block the drain
+      ansible.builtin.uri:
+        url: "{{ awx_api_url }}/api/v2/unified_jobs/?status=running&page_size=50"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ awx_api_token }}"
+        validate_certs: "{{ awx_api_validate_certs }}"
+        ca_path: "{{ awx_api_ca_path }}"
+      register: _running_jobs
+
+    - name: Record blocking jobs (with UI links)
+      ansible.builtin.set_fact:
+        blocking_jobs: >-
+          {{ blocking_jobs | default([]) + [{
+            'id': item.id,
+            'name': item.name,
+            'type': item.type,
+            'started': item.started | default(''),
+            'ui_url': ((awx_public_url ~ '/#/jobs/'
+              ~ (awx_job_ui_segment[item.type] | default('playbook'))
+              ~ '/' ~ item.id ~ '/output') if awx_public_url else '')
+          }] }}
+      loop: "{{ _running_jobs.json.results | default([]) }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    # Blocked = jobs running and the operator has not chosen to force. When
+    # blocked we do NOT scale down (gated below) — AWX stays up, drained.
+    - name: Decide whether the drain is blocked
+      ansible.builtin.set_fact:
+        drain_blocked: "{{ (blocking_jobs | default([]) | length > 0) and not (drain_force | default(false) | bool) }}"
+
+# --- enable / disable / start / stop (operator CR) -----------------------
+- name: "Set AWX replicas via the operator CR for '{{ service_action }}'"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ k8s_kubeconfig }}"
+    state: patched
+    api_version: "{{ awx_cr_api_version }}"
+    kind: "{{ awx_cr_kind }}"
+    name: "{{ awx_cr_name }}"
+    namespace: "{{ awx_namespace }}"
+    definition:
+      spec:
+        replicas: "{{ k8s_replica_map[service_action] | int }}"
+  when:
+    - service_action in ['enable', 'disable', 'start', 'stop']
+    - awx_managed_by == 'operator'
+    - not (drain_blocked | default(false) | bool)
+
+# The awx-operator can lag scaling Deployments back up after a 0 -> 1 CR change.
+# Scale them directly to match the CR so enable is prompt; the operator agrees
+# (same desired count) and won't revert it.
+- name: "Nudge AWX deployments up to match the CR (operator reconcile can lag)"
+  kubernetes.core.k8s_scale:
+    kubeconfig: "{{ k8s_kubeconfig }}"
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ item }}"
+    namespace: "{{ awx_namespace }}"
+    replicas: "{{ awx_desired_replicas | int }}"
+  loop: "{{ tower_services }}"
+  when:
+    - service_action in ['enable', 'start']
+    - awx_managed_by == 'operator'
+
+- name: "Scale AWX deployments directly for '{{ service_action }}'"
+  kubernetes.core.k8s_scale:
+    kubeconfig: "{{ k8s_kubeconfig }}"
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ item }}"
+    namespace: "{{ awx_namespace }}"
+    replicas: "{{ k8s_replica_map[service_action] | int }}"
+    wait: true
+    wait_timeout: 180
+  loop: "{{ tower_services }}"
+  when:
+    - service_action in ['enable', 'disable', 'start', 'stop']
+    - awx_managed_by != 'operator'
+    - not (drain_blocked | default(false) | bool)
+
+- name: "Rollout-restart AWX deployments"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ k8s_kubeconfig }}"
+    state: patched
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ item }}"
+    namespace: "{{ awx_namespace }}"
+    definition:
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: "{{ now(utc=true).isoformat() }}"
+  loop: "{{ tower_services }}"
+  when: service_action == 'restart'
+
+# --- pause / resume (graceful drain via the AWX API) ---------------------
+- name: Drain or undrain AWX job execution
+  when: service_action in ['pause', 'resume']
+  block:
+    - name: Ensure AWX API is configured for pause/resume
+      ansible.builtin.assert:
+        that:
+          - awx_api_url | length > 0
+          - awx_api_token | length > 0
+        fail_msg: >-
+          pause/resume need awx_api_url and awx_api_token (set AWX_API_URL /
+          AWX_API_TOKEN). Without them, use disable/enable instead.
+
+    - name: List AWX instances
+      ansible.builtin.uri:
+        url: "{{ awx_api_url }}/api/v2/instances/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ awx_api_token }}"
+        validate_certs: "{{ awx_api_validate_certs }}"
+        ca_path: "{{ awx_api_ca_path }}"
+      register: _awx_instances
+
+    - name: Drain or undrain AWX instances (pause/resume)
+      ansible.builtin.uri:
+        url: "{{ awx_api_url }}/api/v2/instances/{{ item.id }}/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ awx_api_token }}"
+        body_format: json
+        body:
+          enabled: "{{ service_action == 'resume' }}"
+        status_code: [200]
+        validate_certs: "{{ awx_api_validate_certs }}"
+        ca_path: "{{ awx_api_ca_path }}"
+      loop: "{{ _awx_instances.json.results | selectattr('node_type', 'in', awx_pause_node_types) | list }}"
+      loop_control:
+        label: "{{ item.hostname }} -> enabled={{ service_action == 'resume' }}"
+
+    - name: "Update AWX login banner ({{ 'maintenance' if service_action == 'pause' else 'cleared' }})"
+      ansible.builtin.uri:
+        url: "{{ awx_api_url }}/api/v2/settings/ui/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ awx_api_token }}"
+        body_format: json
+        body:
+          CUSTOM_LOGIN_INFO: "{{ awx_maintenance_login_info if service_action == 'pause' else awx_login_info_default }}"
+        status_code: [200]
+        validate_certs: "{{ awx_api_validate_certs }}"
+        ca_path: "{{ awx_api_ca_path }}"
+
+# --- wait for deployment state after enable/disable ----------------------
+- name: Wait for AWX deployments to reflect '{{ service_action }}'
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ k8s_kubeconfig }}"
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ item }}"
+    namespace: "{{ awx_namespace }}"
+  loop: "{{ tower_services }}"
+  register: _k8s_wait
+  until: >-
+    (service_action in ['disable', 'stop']
+       and ((_k8s_wait.resources[0].status.readyReplicas | default(0)) | int) == 0)
+    or (service_action in ['enable', 'start']
+       and ((_k8s_wait.resources[0].status.readyReplicas | default(0)) | int) >= 1)
+  retries: 30
+  delay: 5
+  when:
+    - service_action in ['enable', 'disable', 'start', 'stop']
+    - not (drain_blocked | default(false) | bool)
+
+# --- on enable: undrain job execution + clear any stale banner -----------
+- name: Restore AWX job execution after enable
+  when:
+    - service_action in ['enable', 'start']
+    - awx_api_token | length > 0
+  block:
+    - name: List AWX instances (post-enable)
+      ansible.builtin.uri:
+        url: "{{ awx_api_url }}/api/v2/instances/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ awx_api_token }}"
+        validate_certs: "{{ awx_api_validate_certs }}"
+        ca_path: "{{ awx_api_ca_path }}"
+      register: _postenable_instances
+      until: "_postenable_instances.status == 200"
+      retries: 12
+      delay: 5
+
+    - name: Re-enable job execution (instance enabled=true)
+      ansible.builtin.uri:
+        url: "{{ awx_api_url }}/api/v2/instances/{{ item.id }}/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ awx_api_token }}"
+        body_format: json
+        body: { enabled: true }
+        status_code: [200]
+        validate_certs: "{{ awx_api_validate_certs }}"
+        ca_path: "{{ awx_api_ca_path }}"
+      loop: "{{ _postenable_instances.json.results | selectattr('node_type', 'in', awx_pause_node_types) | list }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+
+    - name: Clear AWX login banner
+      ansible.builtin.uri:
+        url: "{{ awx_api_url }}/api/v2/settings/ui/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ awx_api_token }}"
+        body_format: json
+        body: { CUSTOM_LOGIN_INFO: "{{ awx_login_info_default }}" }
+        status_code: [200]
+        validate_certs: "{{ awx_api_validate_certs }}"
+        ca_path: "{{ awx_api_ca_path }}"
+
+# --- read state for the report -------------------------------------------
+- name: Read final state of AWX deployments
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ k8s_kubeconfig }}"
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ item }}"
+    namespace: "{{ awx_namespace }}"
+  loop: "{{ tower_services }}"
+  register: _k8s_final
+
+# Detect "paused" (web up, but job-running instances drained). Only possible to
+# tell from the AWX API, since drained pods stay running.
+- name: Read AWX instance enabled-state (for paused detection)
+  ansible.builtin.uri:
+    url: "{{ awx_api_url }}/api/v2/instances/"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ awx_api_token }}"
+    validate_certs: "{{ awx_api_validate_certs }}"
+    ca_path: "{{ awx_api_ca_path }}"
+  register: _awx_inst_status
+  failed_when: false
+  when: awx_api_token | length > 0
+
+- name: Compute paused flag
+  ansible.builtin.set_fact:
+    is_paused: >-
+      {{ (_web_ready | int > 0) and (_enabled_job | int == 0) and (_job_total | int > 0) }}
+  vars:
+    _web_res: "{{ (_k8s_final.results | selectattr('item', 'equalto', 'awx-web') | list | first).resources | default([]) }}"
+    _web_ready: "{{ (_web_res[0].status.readyReplicas | default(0)) if _web_res | length > 0 else 0 }}"
+    _job_instances: >-
+      {{ (_awx_inst_status.json.results | default([]))
+         | selectattr('node_type', 'in', awx_pause_node_types) | list }}
+    _job_total: "{{ _job_instances | length }}"
+    _enabled_job: "{{ _job_instances | selectattr('enabled') | list | length }}"
+  when:
+    - awx_api_token | length > 0
+    - _awx_inst_status.json is defined
+
+- name: Build per-service status report (kubernetes)
+  ansible.builtin.set_fact:
+    service_report: >-
+      {{ service_report | default([]) + [{
+        'name': item.item,
+        'active_state': ('active' if _ready | int > 0 else 'inactive'),
+        'sub_state': (_ready ~ '/' ~ _desired ~ ' ready'),
+        'enabled': ('enabled' if _desired | int > 0 else 'disabled'),
+        'active': (_ready | int > 0)
+      }] }}
+  vars:
+    _res: "{{ (item.resources | default([]))[0] | default({}) }}"
+    _ready: "{{ _res.status.readyReplicas | default(0) }}"
+    _desired: "{{ _res.spec.replicas | default(0) }}"
+  loop: "{{ _k8s_final.results }}"
+  loop_control:
+    label: "{{ item.item }}"

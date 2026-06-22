@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  role_name: tower_services
+  author: iamteedoh
+  description: >-
+    Enable, disable, start, stop, restart, or report the status of Ansible
+    Automation Platform (controller, automation hub, EDA), legacy Ansible
+    Tower, and AWX-on-Kubernetes services for supported maintenance windows.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: ["all"]
+  galaxy_tags:
+    - aap
+    - awx
+    - tower
+    - maintenance
+    - systemd
+    - kubernetes
+
+dependencies: []

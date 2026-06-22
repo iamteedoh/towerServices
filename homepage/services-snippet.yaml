@@ -1,0 +1,70 @@
+# =============================================================================
+# Homepage tiles for towerServices (generic template).
+#
+# Replace the placeholders before pasting into your homepage services.yaml:
+#   ${BRIDGE_URL}    base URL of the bridge      (e.g. http://bridge.lan:30091)
+#   ${TOWER_UI_URL}  your AWX/AAP web UI          (status tile click-through)
+#   <TOKEN>          the bridge token             (keep this file out of git if
+#                                                  you fill in a real token)
+#
+# The status tile uses the customapi widget (sends the Authorization header) to
+# flip 🟢 Healthy / 🔴 Disabled / 🟠 Degraded. The action tiles are plain links
+# (a tile href is a GET, so the token rides the query string — LAN only).
+# =============================================================================
+- Tower Maintenance:
+    - AAP Controller — Status:
+        icon: ansible.png
+        href: ${TOWER_UI_URL}
+        widget:
+          type: customapi
+          url: ${BRIDGE_URL}/api/v1/status/aap_controller
+          method: GET
+          refreshInterval: 10000
+          headers:
+            Authorization: "Bearer <TOKEN>"
+          mappings:
+            - field: state
+              label: State
+              format: text
+              remap:
+                - { value: Healthy, to: "🟢 Healthy" }
+                - { value: Disabled, to: "🔴 Disabled" }
+                - { value: Degraded, to: "🟠 Degraded" }
+                - { value: Unknown, to: "⚪ Unknown" }
+
+    - AAP Controller — Disable:
+        icon: mdi-stop-circle-#f04a4a
+        href: "${BRIDGE_URL}/api/v1/action/aap_controller/disable?confirm=true&token=<TOKEN>"
+        target: _blank
+        description: Stop & disable controller services for maintenance
+
+    - AAP Controller — Enable:
+        icon: mdi-play-circle-#4ade80
+        href: "${BRIDGE_URL}/api/v1/action/aap_controller/enable?token=<TOKEN>"
+        target: _blank
+        description: Start & enable controller services
+
+    - AAP Controller — Restart:
+        icon: mdi-restart-#fbbf24
+        href: "${BRIDGE_URL}/api/v1/action/aap_controller/restart?token=<TOKEN>"
+        target: _blank
+        description: Rolling restart of controller services
+
+    - AWX — Status:
+        icon: awx.png
+        widget:
+          type: customapi
+          url: ${BRIDGE_URL}/api/v1/status/awx
+          method: GET
+          refreshInterval: 10000
+          headers:
+            Authorization: "Bearer <TOKEN>"
+          mappings:
+            - field: state
+              label: State
+              format: text
+              remap:
+                - { value: Healthy, to: "🟢 Healthy" }
+                - { value: Disabled, to: "🔴 Disabled" }
+                - { value: Degraded, to: "🟠 Degraded" }
+                - { value: Unknown, to: "⚪ Unknown" }

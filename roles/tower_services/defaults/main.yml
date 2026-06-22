@@ -1,0 +1,109 @@
+---
+# ---------------------------------------------------------------------------
+# tower_services role defaults
+# ---------------------------------------------------------------------------
+
+# Action to perform against the managed services.
+# One of: status | enable | disable | start | stop | restart
+#   status  - read-only; report current state (never changes anything)
+#   enable  - start the units AND enable them at boot / scale k8s back up
+#   disable - stop the units AND disable them at boot / scale k8s to 0
+#   start   - start now, do NOT change boot enablement
+#   stop    - stop now, do NOT change boot enablement
+#   restart - restart (systemd) / rollout-restart (k8s)
+service_action: status
+
+# Destructive actions (disable, stop) require an explicit confirm. The bridge
+# / Homepage button passes confirm=true; a bare CLI run will refuse otherwise.
+confirm: false
+
+# How this host group's services are managed: "systemd" or "kubernetes".
+# Set per host group in group_vars (systemd for AAP/Tower, kubernetes for AWX).
+tower_platform: systemd
+
+# The list of units (systemd) or Deployment names (kubernetes) to manage.
+# ALWAYS overridden per host group in group_vars/*. Empty here on purpose so a
+# misconfigured host fails loudly instead of acting on the wrong services.
+tower_services: []
+
+# --- systemd action maps -------------------------------------------------
+systemd_state_map:
+  enable: started
+  disable: stopped
+  start: started
+  stop: stopped
+  restart: restarted
+  # status -> omitted (no state change)
+
+systemd_enabled_map:
+  enable: true
+  disable: false
+  # start/stop/restart/status -> omitted (boot enablement untouched)
+
+# --- kubernetes (AWX) settings -------------------------------------------
+# kubernetes.core ignores the KUBECONFIG env var when running inside a pod (it
+# defaults to the in-cluster ServiceAccount), so we pass the kubeconfig to the
+# modules explicitly. Falls back to omit when KUBECONFIG is unset (CLI/in-cluster
+# SA use), so this is a no-op outside the bridge container.
+k8s_kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default(omit, true) }}"
+awx_namespace: awx
+# How AWX is managed:
+#   operator   - patch the AWX custom resource's replicas; the awx-operator
+#                reconciles the Deployments. REQUIRED when the CR has
+#                web_manage_replicas / task_manage_replicas true, otherwise the
+#                operator scales the Deployments back up and "disable" won't stick.
+#   deployment - scale the Deployments directly (raw-manifest / non-operator AWX).
+awx_managed_by: operator
+awx_cr_api_version: awx.ansible.com/v1beta1
+awx_cr_kind: AWX
+awx_cr_name: awx
+awx_desired_replicas: 1
+
+# --- AWX API (for graceful pause/resume = drain) -------------------------
+# pause/resume mark the AWX instances enabled=false/true via the AWX REST API:
+# running jobs finish, no new jobs start, and the web UI stays up. Requires an
+# AWX API URL + token (read from env so CLI/other callers can set them too).
+awx_api_url: "{{ lookup('env', 'AWX_API_URL') | default('', true) }}"
+awx_api_token: "{{ lookup('env', 'AWX_API_TOKEN') | default('', true) }}"
+# Verify TLS by default. Override with AWX_API_VALIDATE_CERTS=false only if you
+# accept the risk; for a self-signed AWX cert, prefer trusting it via a CA
+# bundle (AWX_API_CA_PATH) over disabling verification. (Moot for http:// URLs.)
+awx_api_validate_certs: "{{ lookup('env', 'AWX_API_VALIDATE_CERTS') | default('true', true) | bool }}"
+awx_api_ca_path: "{{ lookup('env', 'AWX_API_CA_PATH') | default(omit, true) }}"
+# Instance node types that execute jobs — these are drained on pause.
+awx_pause_node_types: [control, hybrid, execution]
+
+# Graceful disable: before scaling AWX to 0, stop accepting new jobs. If jobs
+# are still running, the disable is REPORTED AS BLOCKED — it does NOT kill them
+# or scale down — so an operator can investigate. Pass drain_force=true to stop
+# anyway. Set awx_disable_drain=false to skip the drain entirely (hard stop).
+awx_disable_drain: true
+# Public AWX UI base, for building links to a blocking job (from env).
+awx_public_url: "{{ lookup('env', 'AWX_PUBLIC_URL') | default('', true) }}"
+# AWX job type -> UI route segment, to deep-link a blocking job.
+awx_job_ui_segment:
+  job: playbook
+  project_update: project
+  inventory_update: inventory
+  system_job: management
+  ad_hoc_command: command
+  workflow_job: workflow
+
+# Banner shown on the AWX login screen while paused (AWX CUSTOM_LOGIN_INFO).
+# Set on pause, cleared on resume. If you normally run a custom login banner,
+# set awx_login_info_default to it so resume restores yours instead of blanking.
+awx_maintenance_login_info: >-
+  ⚠️ Maintenance in progress — job execution is paused. Running jobs will
+  finish; new jobs stay queued and will not start until maintenance is complete.
+awx_login_info_default: ""
+k8s_replica_map:
+  enable: "{{ awx_desired_replicas }}"
+  start: "{{ awx_desired_replicas }}"
+  disable: 0
+  stop: 0
+
+# --- status reporting ----------------------------------------------------
+# Per-host JSON status is written to the CONTROL node here (the bridge reads
+# this directory). One file per inventory host: <status_output_dir>/<host>.json
+status_output_dir: "{{ lookup('env', 'TOWERSERVICES_STATUS_DIR') | default('/tmp/towerservices', true) }}"
+write_status_file: true

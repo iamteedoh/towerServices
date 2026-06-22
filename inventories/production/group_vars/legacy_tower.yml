@@ -1,0 +1,10 @@
+---
+# Legacy Ansible Tower 3.x. `ansible-tower` is the umbrella service that
+# supervises the rest; managing it is usually enough, but the supporting
+# units are listed for full status visibility.
+tower_platform: systemd
+tower_services:
+  - ansible-tower        # umbrella (was the original target of this repo)
+  - nginx
+  - supervisor
+  - rabbitmq-server
